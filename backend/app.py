@@ -1,9 +1,10 @@
 from flask import Flask, jsonify
-from flask_sqlalchemy import SQLAlchemy
+from models import db
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///internship.db'
-db = SQLAlchemy(app)
+
+db.init_app(app)
 
 @app.route('/')
 def home():
