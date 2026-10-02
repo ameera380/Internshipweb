@@ -24,9 +24,9 @@ class CompanyProfile(db.Model):
     company_id = db.Column(db.Integer, db.ForeignKey('user.user_id'), primary_key=True)
     company_name = db.Column(db.String(255))
     location = db.Column(db.String(255))
+    is_vetted = db.Column(db.Boolean, default=False)
 
     internships = db.relationship('Internship', backref='company', lazy=True)
-
 class CV(db.Model):
     __tablename__ = 'cv'
     CV_id = db.Column(db.Integer, primary_key=True)

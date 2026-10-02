@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, User
+from models import db, User, StudentProfile
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///internship.db'
@@ -45,6 +45,33 @@ def login():
         return jsonify({'error': 'Invalid email or password'}), 401
 
     return jsonify({'message': 'Login successful', 'role': user.role}), 200
+
+@app.route('/student-profile', methods=['POST'])
+def create_student_profile():
+    data = request.get_json()
+    student_id = data.get('student_id')
+    fullName = data.get('fullName')
+    location = data.get('location')
+    major = data.get('major')
+
+    user = User.query.get(student_id)
+    if not user or user.role != 'student':
+        return jsonify({'error': 'Invalid student user'}), 400
+
+    profile = StudentProfile.query.get(student_id)
+    if profile:
+        return jsonify({'error': 'Profile already exists'}), 400
+
+    new_profile = StudentProfile(
+        student_id=student_id,
+        fullName=fullName,
+        location=location,
+        major=major
+    )
+    db.session.add(new_profile)
+    db.session.commit()
+
+    return jsonify({'message': 'Student profile created successfully'}), 201
 
 if __name__ == '__main__':
     with app.app_context():
