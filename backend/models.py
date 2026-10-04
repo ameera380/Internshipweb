@@ -13,7 +13,8 @@ class StudentProfile(db.Model):
     __tablename__ = 'student_profile'
     student_id = db.Column(db.Integer, db.ForeignKey('user.user_id'), primary_key=True)
     fullName = db.Column(db.String(255))
-    location = db.Column(db.String(255))
+    city = db.Column(db.String(100))
+    area = db.Column(db.String(100), nullable=True)
     major = db.Column(db.String(255))
 
     cv = db.relationship('CV', backref='student', uselist=False)
@@ -23,7 +24,8 @@ class CompanyProfile(db.Model):
     __tablename__ = 'company_profile'
     company_id = db.Column(db.Integer, db.ForeignKey('user.user_id'), primary_key=True)
     company_name = db.Column(db.String(255))
-    location = db.Column(db.String(255))
+    city = db.Column(db.String(100))
+    area = db.Column(db.String(100), nullable=True)
     is_vetted = db.Column(db.Boolean, default=False)
 
     internships = db.relationship('Internship', backref='company', lazy=True)
@@ -40,7 +42,8 @@ class Internship(db.Model):
     internship_id = db.Column(db.Integer, primary_key=True)
     company_id = db.Column(db.Integer, db.ForeignKey('company_profile.company_id'))
     title = db.Column(db.String(255), nullable=False)
-    location = db.Column(db.String(255))
+    city = db.Column(db.String(100))
+    area = db.Column(db.String(100), nullable=True)
     duration = db.Column(db.String(100))
     status = db.Column(db.String(50), default='open')
     required_skills = db.Column(db.Text)

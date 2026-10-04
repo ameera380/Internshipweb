@@ -44,14 +44,14 @@ def login():
     if not user or not check_password_hash(user.password, password):
         return jsonify({'error': 'Invalid email or password'}), 401
 
-    return jsonify({'message': 'Login successful', 'role': user.role}), 200
-
+    return jsonify({'message': 'Login successful', 'role': user.role, 'user_id': user.user_id}), 200
 @app.route('/student-profile', methods=['POST'])
 def create_student_profile():
     data = request.get_json()
-    student_id = data.get('student_id')
+    student_id = int(data.get('student_id'))
     fullName = data.get('fullName')
-    location = data.get('location')
+    city = data.get('city')
+    area = data.get('area')
     major = data.get('major')
 
     user = User.query.get(student_id)
@@ -65,7 +65,8 @@ def create_student_profile():
     new_profile = StudentProfile(
         student_id=student_id,
         fullName=fullName,
-        location=location,
+        city=city,
+        area=area,
         major=major
     )
     db.session.add(new_profile)
