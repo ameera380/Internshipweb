@@ -158,6 +158,44 @@ def close_internship(internship_id):
     db.session.commit()
     return jsonify({'message': 'Internship closed successfully'}), 200
 
+@app.route('/internships', methods=['GET'])
+def browse_internships():
+    city = request.args.get('city')
+    area = request.args.get('area')
+    work_mode = request.args.get('work_mode')
+    duration_months = request.args.get('duration_months')
+    skills = request.args.get('skills')
+
+    query = Internship.query.filter_by(status='open')
+
+    if city:
+        query = query.filter_by(city=city)
+    if area:
+        query = query.filter_by(area=area)
+    if work_mode:
+        query = query.filter_by(work_mode=work_mode)
+    if duration_months:
+        query = query.filter_by(duration_months=int(duration_months))
+    if skills:
+        query = query.filter(Internship.required_skills.ilike(f'%{skills}%'))
+
+    results = query.all()
+
+    internships_list = []
+    for i in results:
+        internships_list.append({
+            'internship_id': i.internship_id,
+            'title': i.title,
+            'city': i.city,
+            'area': i.area,
+            'work_mode': i.work_mode,
+            'duration_months': i.duration_months,
+            'required_skills': i.required_skills,
+            'company_id': i.company_id
+        })
+
+    return jsonify(internships_list), 200
+    
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
