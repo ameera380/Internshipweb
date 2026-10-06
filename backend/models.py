@@ -44,7 +44,8 @@ class Internship(db.Model):
     title = db.Column(db.String(255), nullable=False)
     city = db.Column(db.String(100))
     area = db.Column(db.String(100), nullable=True)
-    duration = db.Column(db.String(100))
+    duration_months = db.Column(db.Integer)
+    work_mode = db.Column(db.String(50))  # 'Remote', 'On-site', or 'Hybrid'
     status = db.Column(db.String(50), default='open')
     required_skills = db.Column(db.Text)
 

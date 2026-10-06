@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, User, StudentProfile, CompanyProfile
+from models import db, User, StudentProfile, CompanyProfile, Internship
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///internship.db'
@@ -99,7 +99,65 @@ def create_company_profile():
     db.session.commit()
 
     return jsonify({'message': 'Company profile created successfully'}), 201
-    
+
+@app.route('/internship', methods=['POST'])
+def create_internship():
+    data = request.get_json()
+    company_id = int(data.get('company_id'))
+    title = data.get('title')
+    city = data.get('city')
+    area = data.get('area')
+    duration_months = int(data.get('duration_months'))
+    work_mode = data.get('work_mode')
+    required_skills = data.get('required_skills')
+
+    company = CompanyProfile.query.get(company_id)
+    if not company:
+        return jsonify({'error': 'Invalid company'}), 400
+
+    new_internship = Internship(
+        company_id=company_id,
+        title=title,
+        city=city,
+        area=area,
+        duration_months=duration_months,
+        work_mode=work_mode,
+        required_skills=required_skills,
+        status='open'
+)
+    db.session.add(new_internship)
+    db.session.commit()
+
+    return jsonify({'message': 'Internship posted successfully', 'internship_id': new_internship.internship_id}), 201
+
+
+@app.route('/internship/<int:internship_id>', methods=['PUT'])
+def edit_internship(internship_id):
+    data = request.get_json()
+    internship = Internship.query.get(internship_id)
+    if not internship:
+        return jsonify({'error': 'Internship not found'}), 404
+
+    internship.title = data.get('title', internship.title)
+    internship.city = data.get('city', internship.city)
+    internship.area = data.get('area', internship.area)
+    internship.duration = data.get('duration', internship.duration)
+    internship.required_skills = data.get('required_skills', internship.required_skills)
+
+    db.session.commit()
+    return jsonify({'message': 'Internship updated successfully'}), 200
+
+
+@app.route('/internship/<int:internship_id>/close', methods=['PUT'])
+def close_internship(internship_id):
+    internship = Internship.query.get(internship_id)
+    if not internship:
+        return jsonify({'error': 'Internship not found'}), 404
+
+    internship.status = 'closed'
+    db.session.commit()
+    return jsonify({'message': 'Internship closed successfully'}), 200
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
