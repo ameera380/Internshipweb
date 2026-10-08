@@ -1,14 +1,48 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, User, StudentProfile, CompanyProfile, Internship
+from models import db, User, StudentProfile, CompanyProfile, Internship, CV
+import os
+from werkzeug.utils import secure_filename
+import PyPDF2
+import docx
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///internship.db'
 
 db.init_app(app)
 CORS(app)
+UPLOAD_FOLDER = 'uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
+COMMON_SKILLS = [
+    "Python", "Java", "JavaScript", "SQL", "Excel", "PowerPoint",
+    "Marketing", "Public Speaking", "Photoshop", "Social Media",
+    "Data Analysis", "Machine Learning", "C++", "HTML", "CSS",
+    "Project Management", "Communication", "Leadership", "Research",
+    "Accounting", "Finance", "Sales", "Customer Service", "Writing",
+    "Graphic Design", "Video Editing", "React", "Flask", "Django",
+    "Networking", "Teamwork"
+]
+
+def extract_text_from_pdf(filepath):
+    text = ""
+    with open(filepath, 'rb') as f:
+        reader = PyPDF2.PdfReader(f)
+        for page in reader.pages:
+            text += page.extract_text() or ""
+    return text
+
+def extract_text_from_docx(filepath):
+    doc = docx.Document(filepath)
+    return "\n".join([para.text for para in doc.paragraphs])
+
+def extract_skills(text):
+    text_lower = text.lower()
+    found_skills = [skill for skill in COMMON_SKILLS if skill.lower() in text_lower]
+    return ", ".join(found_skills)
+    
 @app.route('/')
 def home():
     return jsonify({'message': 'Backend is running'})
@@ -158,6 +192,50 @@ def close_internship(internship_id):
     db.session.commit()
     return jsonify({'message': 'Internship closed successfully'}), 200
 
+@app.route('/upload-cv', methods=['POST'])
+def upload_cv():
+    student_id = request.form.get('student_id')
+    file = request.files.get('cv_file')
+
+    if not student_id or not file:
+        return jsonify({'error': 'Missing student_id or file'}), 400
+
+    student_id = int(student_id)
+    student = StudentProfile.query.get(student_id)
+    if not student:
+        return jsonify({'error': 'Student profile not found'}), 400
+
+    filename = secure_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(filepath)
+
+    if filename.lower().endswith('.pdf'):
+        text = extract_text_from_pdf(filepath)
+    elif filename.lower().endswith('.docx'):
+        text = extract_text_from_docx(filepath)
+    else:
+        return jsonify({'error': 'Unsupported file type. Please upload PDF or DOCX.'}), 400
+
+    skills = extract_skills(text)
+
+    existing_cv = CV.query.filter_by(student_id=student_id).first()
+    if existing_cv:
+        existing_cv.skills = skills
+        existing_cv.experience = text[:2000]
+    else:
+        new_cv = CV(
+            student_id=student_id,
+            skills=skills,
+            experience=text[:2000]
+        )
+        db.session.add(new_cv)
+
+    db.session.commit()
+
+    return jsonify({
+        'message': 'CV uploaded and processed successfully',
+        'extracted_skills': skills
+    }), 201
 @app.route('/internships', methods=['GET'])
 def browse_internships():
     city = request.args.get('city')
@@ -195,7 +273,7 @@ def browse_internships():
         })
 
     return jsonify(internships_list), 200
-    
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
