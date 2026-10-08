@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, User, StudentProfile, CompanyProfile, Internship, CV
+from models import db, User, StudentProfile, CompanyProfile, Internship, CV, Match
 import os
 from werkzeug.utils import secure_filename
 import PyPDF2
@@ -42,6 +42,63 @@ def extract_skills(text):
     text_lower = text.lower()
     found_skills = [skill for skill in COMMON_SKILLS if skill.lower() in text_lower]
     return ", ".join(found_skills)
+
+def calculate_match(student, cv, internship):
+    required = [s.strip().lower() for s in (internship.required_skills or '').split(',') if s.strip()]
+    owned = [s.strip().lower() for s in (cv.skills or '').split(',') if s.strip()]
+
+    matched = [s for s in required if s in owned]
+    skills_score = (len(matched) / len(required) * 100) if required else 0
+    location_score = 100 if (student.city and student.city == internship.city) else 0
+
+    total = round(0.8 * skills_score + 0.2 * location_score, 2)
+    return total, round(skills_score, 2), location_score, matched
+
+
+def notify_department(company, internship, student):
+    # Placeholder for now: prints to the terminal.
+    # We'll replace this with a real email to the department Gmail next.
+    print(f"[DEPARTMENT NOTIFICATION] Company '{company.company_name}' needs vetting. "
+          f"Student {student.fullName} was matched to '{internship.title}'.")
+
+
+def generate_matches(student_id):
+    student = StudentProfile.query.get(student_id)
+    cv = CV.query.filter_by(student_id=student_id).first()
+    if not student or not cv:
+        return []
+
+    results = []
+    for internship in Internship.query.filter_by(status='open').all():
+        total, skills_score, location_score, matched = calculate_match(student, cv, internship)
+        if skills_score == 0:
+            continue  # no shared skills, so not a match
+
+        company = internship.company
+        match = Match.query.filter_by(student_id=student_id, internship_id=internship.internship_id).first()
+
+        if match:
+            match.match_score = total
+        else:
+            status = 'auto_approved' if company.is_vetted else 'pending_department_review'
+            match = Match(student_id=student_id, internship_id=internship.internship_id,
+                          match_score=total, status=status)
+            db.session.add(match)
+            if not company.is_vetted:
+                notify_department(company, internship, student)
+
+        results.append({
+            'internship_id': internship.internship_id,
+            'title': internship.title,
+            'match_score': total,
+            'skills_score': skills_score,
+            'location_score': location_score,
+            'matched_skills': matched,
+            'status': match.status
+        })
+
+    db.session.commit()
+    return results
     
 @app.route('/')
 def home():
@@ -232,9 +289,12 @@ def upload_cv():
 
     db.session.commit()
 
+    matches = generate_matches(student_id)
+
     return jsonify({
         'message': 'CV uploaded and processed successfully',
-        'extracted_skills': skills
+        'extracted_skills': skills,
+        'matches_found': len(matches)
     }), 201
 @app.route('/internships', methods=['GET'])
 def browse_internships():
@@ -273,6 +333,43 @@ def browse_internships():
         })
 
     return jsonify(internships_list), 200
+
+@app.route('/generate-matches', methods=['POST'])
+def generate_matches_route():
+    data = request.get_json()
+    student_id = int(data.get('student_id'))
+    results = generate_matches(student_id)
+    return jsonify(results), 200
+
+
+@app.route('/matches/<int:student_id>', methods=['GET'])
+def get_matches(student_id):
+    matches = Match.query.filter_by(student_id=student_id).order_by(Match.match_score.desc()).all()
+    return jsonify([{
+        'internship_id': m.internship_id,
+        'title': m.internship.title,
+        'company_name': m.internship.company.company_name,
+        'match_score': float(m.match_score),
+        'status': m.status
+    } for m in matches]), 200
+
+
+@app.route('/vet-company/<int:company_id>', methods=['PUT'])
+def vet_company(company_id):
+    company = CompanyProfile.query.get(company_id)
+    if not company:
+        return jsonify({'error': 'Company not found'}), 404
+
+    company.is_vetted = True
+    pending = Match.query.join(Internship).filter(
+        Internship.company_id == company_id,
+        Match.status == 'pending_department_review'
+    ).all()
+    for m in pending:
+        m.status = 'approved_by_department'
+
+    db.session.commit()
+    return jsonify({'message': 'Company vetted', 'matches_released': len(pending)}), 200
 
 if __name__ == '__main__':
     with app.app_context():
