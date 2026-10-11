@@ -27,6 +27,7 @@ class CompanyProfile(db.Model):
     city = db.Column(db.String(100))
     area = db.Column(db.String(100), nullable=True)
     is_vetted = db.Column(db.Boolean, default=False)
+    is_blacklisted = db.Column(db.Boolean, default=False)
 
     internships = db.relationship('Internship', backref='company', lazy=True)
 class CV(db.Model):

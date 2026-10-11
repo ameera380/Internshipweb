@@ -1,8 +1,13 @@
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from markupsafe import escape
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from models import db, User, StudentProfile, CompanyProfile, Internship, CV, Match
 import os
+import smtplib
+from email.mime.text import MIMEText
+from dotenv import load_dotenv 
 from werkzeug.utils import secure_filename
 import PyPDF2
 import docx
@@ -15,6 +20,12 @@ CORS(app)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+load_dotenv()
+DEPT_EMAIL = os.getenv('DEPT_EMAIL')
+DEPT_EMAIL_PASSWORD = os.getenv('DEPT_EMAIL_PASSWORD')
+SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-for-demo')
+serializer = URLSafeTimedSerializer(SECRET_KEY)
+BASE_URL = 'http://127.0.0.1:5000'
 
 COMMON_SKILLS = [
     "Python", "Java", "JavaScript", "SQL", "Excel", "PowerPoint",
@@ -55,12 +66,48 @@ def calculate_match(student, cv, internship):
     return total, round(skills_score, 2), location_score, matched
 
 
-def notify_department(company, internship, student):
-    # Placeholder for now: prints to the terminal.
-    # We'll replace this with a real email to the department Gmail next.
-    print(f"[DEPARTMENT NOTIFICATION] Company '{company.company_name}' needs vetting. "
-          f"Student {student.fullName} was matched to '{internship.title}'.")
+def send_email(msg):
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=20) as server:
+            server.login(DEPT_EMAIL, DEPT_EMAIL_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"Port 465 failed: {e}")
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587, timeout=20) as server:
+            server.starttls()
+            server.login(DEPT_EMAIL, DEPT_EMAIL_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"Port 587 failed: {e}")
+    return False
 
+
+def notify_department(company, internship, student):
+    approve_token = serializer.dumps(company.company_id, salt='vet-approve')
+    reject_token = serializer.dumps(company.company_id, salt='vet-reject')
+    approve_link = f"{BASE_URL}/vet/approve/{approve_token}"
+    reject_link = f"{BASE_URL}/vet/reject/{reject_token}"
+
+    body = (
+        f"A student has applied to an internship at a company that is not yet vetted by the university.\n\n"
+        f"Company: {company.company_name}\n"
+        f"Internship: {internship.title}\n"
+        f"Student: {student.fullName} ({student.major})\n\n"
+        f"APPROVE this company:\n{approve_link}\n\n"
+        f"REJECT this company (blacklist):\n{reject_link}\n"
+    )
+    msg = MIMEText(body)
+    msg['Subject'] = f"Vetting Required: {company.company_name}"
+    msg['From'] = DEPT_EMAIL
+    msg['To'] = DEPT_EMAIL
+
+    if send_email(msg):
+        print("Department notified by email.")
+    else:
+        print("Email failed on both ports.")
 
 def generate_matches(student_id):
     student = StudentProfile.query.get(student_id)
@@ -70,29 +117,24 @@ def generate_matches(student_id):
 
     results = []
     for internship in Internship.query.filter_by(status='open').all():
+        if internship.company.is_blacklisted:
+            continue  # blocked by the university
+
         total, skills_score, location_score, matched = calculate_match(student, cv, internship)
         if skills_score == 0:
-            continue  # no shared skills, so not a match
+            continue
 
-        company = internship.company
         match = Match.query.filter_by(student_id=student_id, internship_id=internship.internship_id).first()
-
         if match:
             match.match_score = total
         else:
-            status = 'auto_approved' if company.is_vetted else 'pending_department_review'
             match = Match(student_id=student_id, internship_id=internship.internship_id,
-                          match_score=total, status=status)
+                          match_score=total, status='recommended')
             db.session.add(match)
-            if not company.is_vetted:
-                notify_department(company, internship, student)
-
         results.append({
             'internship_id': internship.internship_id,
             'title': internship.title,
             'match_score': total,
-            'skills_score': skills_score,
-            'location_score': location_score,
             'matched_skills': matched,
             'status': match.status
         })
@@ -100,6 +142,17 @@ def generate_matches(student_id):
     db.session.commit()
     return results
     
+def overall_status(match):
+    company = match.internship.company
+    if match.status == 'recommended':
+        return 'recommended'
+    if match.status == 'rejected_by_company':
+        return 'rejected_by_company'
+    if company.is_blacklisted:
+        return 'rejected_by_university'
+    if match.status == 'accepted_by_company':
+        return 'internship_confirmed' if company.is_vetted else 'accepted_waiting_university'
+    return 'applied' if company.is_vetted else 'applied_waiting_university'
 @app.route('/')
 def home():
     return jsonify({'message': 'Backend is running'})
@@ -232,7 +285,8 @@ def edit_internship(internship_id):
     internship.title = data.get('title', internship.title)
     internship.city = data.get('city', internship.city)
     internship.area = data.get('area', internship.area)
-    internship.duration = data.get('duration', internship.duration)
+    internship.duration_months = data.get('duration_months', internship.duration_months)
+    internship.work_mode = data.get('work_mode', internship.work_mode)
     internship.required_skills = data.get('required_skills', internship.required_skills)
 
     db.session.commit()
@@ -341,7 +395,6 @@ def generate_matches_route():
     results = generate_matches(student_id)
     return jsonify(results), 200
 
-
 @app.route('/matches/<int:student_id>', methods=['GET'])
 def get_matches(student_id):
     matches = Match.query.filter_by(student_id=student_id).order_by(Match.match_score.desc()).all()
@@ -350,26 +403,120 @@ def get_matches(student_id):
         'title': m.internship.title,
         'company_name': m.internship.company.company_name,
         'match_score': float(m.match_score),
-        'status': m.status
+        'status': overall_status(m)
     } for m in matches]), 200
-
-
-@app.route('/vet-company/<int:company_id>', methods=['PUT'])
-def vet_company(company_id):
+    
+def apply_vetting_decision(company_id, approve):
     company = CompanyProfile.query.get(company_id)
     if not company:
-        return jsonify({'error': 'Company not found'}), 404
+        return None, 0
 
-    company.is_vetted = True
-    pending = Match.query.join(Internship).filter(
-        Internship.company_id == company_id,
-        Match.status == 'pending_department_review'
-    ).all()
-    for m in pending:
-        m.status = 'approved_by_department'
-
+    company.is_vetted = approve
+    company.is_blacklisted = not approve
     db.session.commit()
-    return jsonify({'message': 'Company vetted', 'matches_released': len(pending)}), 200
+
+    affected = Match.query.join(Internship).filter(
+        Internship.company_id == company_id,
+        Match.status.in_(['applied', 'accepted_by_company'])
+    ).count()
+    return company, affected
+
+
+@app.route('/vet/<action>/<token>', methods=['GET'])
+def vet_from_email(action, token):
+    if action not in ('approve', 'reject'):
+        return '<h3>Invalid link.</h3>', 400
+    try:
+        company_id = serializer.loads(token, salt=f'vet-{action}', max_age=60 * 60 * 24 * 7)
+    except SignatureExpired:
+        return '<h3>This link has expired.</h3>', 400
+    except BadSignature:
+        return '<h3>Invalid link.</h3>', 400
+
+    company, count = apply_vetting_decision(company_id, approve=(action == 'approve'))
+    if not company:
+        return '<h3>Company not found.</h3>', 404
+
+    verb = 'approved' if action == 'approve' else 'rejected'
+    return f'<h2>Company "{escape(company.company_name)}" {verb}.</h2><p>{count} application(s) affected.</p>'
+
+
+
+
+@app.route('/apply', methods=['POST'])
+def apply_to_internship():
+    data = request.get_json()
+    student_id = int(data.get('student_id'))
+    internship_id = int(data.get('internship_id'))
+
+    match = Match.query.filter_by(student_id=student_id, internship_id=internship_id).first()
+    if not match:
+        return jsonify({'error': 'No match found for this internship'}), 404
+    if match.status != 'recommended':
+        return jsonify({'error': f'Cannot apply. Current status: {match.status}'}), 400
+
+    internship = match.internship
+    company = internship.company
+    if company.is_blacklisted:
+        return jsonify({'error': 'This company is not approved by the university'}), 400
+
+    match.status = 'applied'
+    db.session.commit()
+
+    if not company.is_vetted:
+        already_requested = Match.query.join(Internship).filter(
+            Internship.company_id == company.company_id,
+            Match.status != 'recommended',
+            Match.match_id != match.match_id
+        ).first()
+        if not already_requested:
+            notify_department(company, internship, match.student)
+
+    return jsonify({'message': 'Application sent to the company'}), 200
+
+
+@app.route('/company-applicants/<int:company_id>', methods=['GET'])
+def company_applicants(company_id):
+    matches = Match.query.join(Internship).filter(
+        Internship.company_id == company_id,
+        Match.status != 'recommended'
+    ).order_by(Match.match_score.desc()).all()
+
+    result = []
+    for m in matches:
+        student = m.student
+        cv = student.cv
+        result.append({
+            'match_id': m.match_id,
+            'student_name': student.fullName,
+            'major': student.major,
+            'city': student.city,
+            'area': student.area,
+            'skills': cv.skills if cv else '',
+            'internship_title': m.internship.title,
+            'match_score': float(m.match_score),
+            'status': overall_status(m),
+            'decision_pending': m.status == 'applied'
+        })
+    return jsonify(result), 200
+
+@app.route('/company-decision', methods=['POST'])
+def company_decision():
+    data = request.get_json()
+    match_id = int(data.get('match_id'))
+    decision = data.get('decision')
+
+    match = Match.query.get(match_id)
+    if not match:
+        return jsonify({'error': 'Application not found'}), 404
+    if match.status != 'applied':
+        return jsonify({'error': f'Already decided. Current status: {match.status}'}), 400
+    if decision not in ('accept', 'reject'):
+        return jsonify({'error': 'Decision must be accept or reject'}), 400
+
+    match.status = 'accepted_by_company' if decision == 'accept' else 'rejected_by_company'
+    db.session.commit()
+    return jsonify({'message': f'Application {decision}ed', 'status': overall_status(match)}), 200
 
 if __name__ == '__main__':
     with app.app_context():
